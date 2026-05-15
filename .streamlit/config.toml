@@ -1,0 +1,11 @@
+# SHL Assessment Recommender — Streamlit Config
+[theme]
+primaryColor = "#63b3ed"
+backgroundColor = "#0d1117"
+secondaryBackgroundColor = "#1a2332"
+textColor = "#e2e8f0"
+font = "sans serif"
+
+[server]
+headless = true
+enableCORS = false

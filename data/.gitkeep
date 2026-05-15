@@ -1,0 +1,6 @@
+# This directory stores the cached SHL product catalog JSON.
+# The catalog is downloaded automatically at startup from:
+# https://tcp-us-prod-rnd.shl.com/voiceRater/shl-ai-hiring/shl_product_catalog.json
+#
+# The file shl_catalog.json will appear here after the first run.
+# It is excluded from version control via .gitignore.
