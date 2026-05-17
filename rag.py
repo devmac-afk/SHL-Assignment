@@ -20,20 +20,14 @@ import requests
 from dotenv import load_dotenv
 
 # Docling — for HybridChunker
-from docling.chunking import HybridChunker
-from docling.document_converter import DocumentConverter, InputFormat
-from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
-from transformers import AutoTokenizer
 
 # LangChain
 from langchain_community.retrievers import BM25Retriever
-from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_huggingface import HuggingFaceEmbeddings
 
 load_dotenv()
 
@@ -235,167 +229,53 @@ def build_documents(raw_catalog):
 
 
 # ─────────────────────────────────────────────────────────────
-# 3.  Docling HybridChunker
+# 3.  Chunking
 #
-#  HybridChunker combines:
-#    - Structure-aware splitting: respects headings, paragraphs, lists
-#    - Token-limit enforcement:   no chunk exceeds the embedding model's
-#                                 max token window (default 512)
-#
-#  For each assessment we:
-#    1. Use DocumentConverter.convert_string() to parse Markdown
-#       → produces a DoclingDocument (internal structured format)
-#    2. Run HybridChunker.chunk() on that document
-#    3. Use chunker.contextualize(chunk) to prepend section context
-#    4. Wrap each chunk in a LangChain Document with metadata
+#  We use a lightweight character-based chunker.
+#  This avoids the high memory requirements of Docling on Render's free tier.
 # ─────────────────────────────────────────────────────────────
 
-# Embedding model whose tokenizer we align with
-EMBED_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
-
-
-def build_chunker():
+def simple_chunk_documents(doc_pairs, chunk_size=1200, overlap=150):
     """
-    Build and return a Docling HybridChunker aligned to our embedding model's tokenizer.
-    This ensures chunks never exceed the model's 512-token window.
+    Lightweight chunker for low-memory hosting environments.
+    Splits each assessment markdown into overlapping character windows.
     """
-    print(f"Loading tokenizer for HybridChunker: {EMBED_MODEL_ID}")
-    hf_tokenizer = HuggingFaceTokenizer(
-        tokenizer=AutoTokenizer.from_pretrained(EMBED_MODEL_ID)
-    )
-    chunker = HybridChunker(tokenizer=hf_tokenizer, max_tokens=512)
-    print("HybridChunker ready.")
-    return chunker
+    chunks = []
+    print(f"Chunking {len(doc_pairs)} documents with lightweight splitter...")
+    for markdown_text, metadata in doc_pairs:
+        text = markdown_text.strip()
+        if not text:
+            continue
 
+        start = 0
+        text_len = len(text)
+        while start < text_len:
+            end = min(start + chunk_size, text_len)
+            chunk_text = text[start:end].strip()
+            if chunk_text:
+                chunks.append(Document(page_content=chunk_text, metadata=metadata))
+            if end >= text_len:
+                break
+            start = max(end - overlap, start + 1)
 
-def docling_hybrid_chunk(doc_pairs, chunker):
-    """
-    Chunk all assessment documents using Docling's HybridChunker.
-
-    doc_pairs: list of (markdown_str, metadata_dict) from build_documents()
-    chunker:   a configured HybridChunker instance
-
-    Returns a list of LangChain Document objects (one per chunk).
-    """
-    # Only allow Markdown format to prevent loading heavy PDF/OCR ML models
-    converter = DocumentConverter(allowed_formats=[InputFormat.MD])
-    all_chunks = []
-    total = len(doc_pairs)
-
-    print(f"Chunking {total} documents...")
-    for i, (markdown_text, metadata) in enumerate(doc_pairs):
-        if (i + 1) % 50 == 0:
-            print(f"  Processed {i + 1}/{total} documents...")
-
-        # Parse the Markdown string into a DoclingDocument
-        result = converter.convert_string(
-            content=markdown_text,
-            format=InputFormat.MD,
-        )
-        dl_doc = result.document
-
-        # Chunk the DoclingDocument
-        for chunk in chunker.chunk(dl_doc=dl_doc):
-            # contextualize() adds section heading context to the chunk text
-            chunk_text = chunker.contextualize(chunk=chunk)
-
-            if chunk_text.strip():
-                all_chunks.append(
-                    Document(page_content=chunk_text, metadata=metadata)
-                )
-
-    print(f"Total chunks produced by Docling HybridChunker: {len(all_chunks)}")
-    return all_chunks
+    print(f"Total lightweight chunks produced: {len(chunks)}")
+    return chunks
 
 
 # ─────────────────────────────────────────────────────────────
-# 4.  Build FAISS + BM25 EnsembleRetriever
+# 4.  Build BM25 Retriever
 # ─────────────────────────────────────────────────────────────
-
-VECTORSTORE_DIR = Path(__file__).parent / "vectorstore"
-
-
-class HybridRetriever:
-    """
-    Simple hybrid retriever that combines FAISS (semantic) and BM25 (keyword)
-    using Reciprocal Rank Fusion (RRF).
-
-    RRF score for a document = 1/(rank_in_faiss + 60) + 1/(rank_in_bm25 + 60)
-    Documents that rank highly in BOTH retrievers get the highest final scores.
-    """
-
-    def __init__(self, faiss_retriever, bm25_retriever):
-        self.faiss_retriever = faiss_retriever
-        self.bm25_retriever  = bm25_retriever
-
-    def invoke(self, query, top_k=10):
-        """Run both retrievers, merge results with RRF, return top_k docs."""
-        faiss_docs = self.faiss_retriever.invoke(query)
-        bm25_docs  = self.bm25_retriever.invoke(query)
-
-        # Build a score map: doc_id → (score, Document)
-        # We use the page_content as the unique key for each chunk
-        scores = {}
-
-        for rank, doc in enumerate(faiss_docs):
-            key = doc.page_content
-            if key not in scores:
-                scores[key] = (0.0, doc)
-            old_score, _ = scores[key]
-            scores[key] = (old_score + 1.0 / (rank + 60), doc)
-
-        for rank, doc in enumerate(bm25_docs):
-            key = doc.page_content
-            if key not in scores:
-                scores[key] = (0.0, doc)
-            old_score, d = scores[key]
-            scores[key] = (old_score + 1.0 / (rank + 60), d)
-
-        # Sort by RRF score descending
-        sorted_docs = sorted(scores.values(), key=lambda x: x[0], reverse=True)
-        return [doc for _, doc in sorted_docs[:top_k]]
-
 
 def build_retriever(chunks):
     """
-    Build a hybrid retriever:
-      - FAISS  → semantic search  (Google text-embedding-004)
-      - BM25   → keyword search
-    Both are merged with Reciprocal Rank Fusion.
+    Build a lightweight BM25 retriever.
+    This avoids heavyweight embedding/model startup on 512MB hosts.
     """
-    api_key = os.environ.get("GOOGLE_API_KEY", "")
-
-    # ── FAISS (semantic) ──────────────────────────────────────
-    embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
-
-    if VECTORSTORE_DIR.exists() and any(VECTORSTORE_DIR.iterdir()):
-        print("Loading existing FAISS index from disk...")
-        vectorstore = FAISS.load_local(
-            str(VECTORSTORE_DIR),
-            embeddings,
-            allow_dangerous_deserialization=True,
-        )
-        print(f"FAISS index loaded ({vectorstore.index.ntotal} vectors).")
-    else:
-        print(f"Building FAISS index from {len(chunks)} chunks... (takes a moment)")
-        vectorstore = FAISS.from_documents(chunks, embeddings)
-        VECTORSTORE_DIR.mkdir(parents=True, exist_ok=True)
-        vectorstore.save_local(str(VECTORSTORE_DIR))
-        print("FAISS index built and saved to disk.")
-
-    faiss_retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
-
-    # ── BM25 (keyword) ────────────────────────────────────────
     print("Building BM25 retriever...")
     bm25_retriever = BM25Retriever.from_documents(chunks)
     bm25_retriever.k = 10
-
-    # ── Combine with RRF ──────────────────────────────────────
-    hybrid = HybridRetriever(faiss_retriever, bm25_retriever)
-    print("Hybrid retriever ready (FAISS + BM25 via RRF).")
-    return hybrid
+    print("BM25 retriever ready.")
+    return bm25_retriever
 
 
 # ─────────────────────────────────────────────────────────────
@@ -643,11 +523,10 @@ def init_rag():
     # Step 2: Convert entries to (markdown, metadata) pairs
     doc_pairs = build_documents(raw)
 
-    # Step 3: Chunk with Docling HybridChunker
-    chunker = build_chunker()
-    chunks  = docling_hybrid_chunk(doc_pairs, chunker)
+    # Step 3: Chunk with a lightweight splitter for low-memory hosting
+    chunks = simple_chunk_documents(doc_pairs)
 
-    # Step 4: Build hybrid retriever
+    # Step 4: Build retriever
     retriever = build_retriever(chunks)
 
     # Step 5: Build LLM

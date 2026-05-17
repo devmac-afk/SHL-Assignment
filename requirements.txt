@@ -12,19 +12,8 @@ langchain-community>=0.3.18
 langchain-google-genai
 langchain-text-splitters>=0.3.0
 
-# Vector store
-faiss-cpu>=1.8.0
-
 # BM25 keyword search
 rank-bm25>=0.2.2
-
-# Docling — HybridChunker (structure-aware + token-limit chunking)
-docling>=2.0.0
-langchain-docling>=0.1.0
-
-# Tokenizer for HybridChunker (aligned to embedding model)
-sentence-transformers>=3.0.0
-transformers>=4.40.0
 
 # Frontend
 streamlit>=1.42.0

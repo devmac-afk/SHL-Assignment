@@ -4,13 +4,12 @@
 
 The project is a stateless conversational recommender over the SHL catalog. The backend exposes `GET /health` and `POST /chat` through FastAPI. Every `/chat` request carries the full message history, and the service stores no per-conversation session state. The frontend is a thin Streamlit client that persists chat history in the browser session and reposts it on each turn.
 
-The retrieval layer uses a hybrid approach:
+The retrieval layer uses a lightweight setup:
 
-- `sentence-transformers/all-MiniLM-L6-v2` embeddings with FAISS for semantic recall
-- BM25 for exact term matching
-- Reciprocal Rank Fusion to combine both signals
+- A simple character-based text chunker to divide document text into chunks.
+- A BM25 keyword search index for retrieval.
 
-Catalog entries are converted into structured Markdown, chunked with Docling `HybridChunker`, and indexed once at startup.
+*Note on Architecture Compromises:* The original plan was to use a hybrid retrieval approach (`sentence-transformers` + FAISS for semantic search, and `Docling`'s `HybridChunker` for structure-aware parsing). However, Render's free tier limits memory to 512MB, which caused Out-Of-Memory (OOM) crashes during deployment when loading heavy ML libraries like PyTorch. To successfully deploy the app, the heavy ML libraries and semantic search were stripped out in favor of a purely keyword-based BM25 retriever and a standard character splitter.
 
 ## Prompting And Conversation Handling
 
@@ -53,6 +52,7 @@ Given more time, I would add replay-based evaluation against the public conversa
 - Relying only on the latest user turn for retrieval caused weak follow-up handling.
 - The initial dataset ingestion was too permissive and allowed non-test artifacts.
 - The original deployment file referenced build steps that did not exist in the repo.
+- Deploying heavy ML dependencies (PyTorch, Docling, FAISS) on Render's 512MB free tier resulted in immediate Out-of-Memory crashes, forcing a downgrade to a pure keyword-search (BM25) approach.
 
 ## AI Tooling Disclosure
 
