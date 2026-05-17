@@ -47,13 +47,3 @@ I added deterministic tests for the highest-risk requirements:
 
 Given more time, I would add replay-based evaluation against the public conversation traces and compute Recall@10 directly over those traces.
 
-## What Did Not Work
-
-- Relying only on the latest user turn for retrieval caused weak follow-up handling.
-- The initial dataset ingestion was too permissive and allowed non-test artifacts.
-- The original deployment file referenced build steps that did not exist in the repo.
-- Deploying heavy ML dependencies (PyTorch, Docling, FAISS) on Render's 512MB free tier resulted in immediate Out-of-Memory crashes, forcing a downgrade to a pure keyword-search (BM25) approach.
-
-## AI Tooling Disclosure
-
-AI-assisted coding was used to speed up implementation, review the repository against the assignment brief, and draft code changes. All final logic, filters, and behavior decisions were manually checked and adjusted against the project requirements.
